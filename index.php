@@ -1,0 +1,555 @@
+<?php
+session_start();
+
+// กำหนดไฟล์ฐานข้อมูลแบบง่าย (JSON)
+$product_file = 'products.json';
+$history_file = 'history.json';
+
+// สร้างไฟล์หากยังไม่มี
+if (!file_exists($product_file)) {
+    $initial_products = [
+        ["id" => "IT-001", "name" => "Mouse Wireless Logitech", "qty" => 15, "unit" => "ชิ้น", "img" => "https://images.unsplash.com/photo-1615663245857-ac93bb7c39e7?w=500"],
+        ["id" => "IT-002", "name" => "สาย LAN Cat6 30M", "qty" => 5, "unit" => "กล่อง", "img" => "https://images.unsplash.com/photo-1544244015-0df4b3ffc6b0?w=500"]
+    ];
+    file_put_contents($product_file, json_encode($initial_products, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+if (!file_exists($history_file)) {
+    file_put_contents($history_file, json_encode([], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+
+// ฟังก์ชันจัดการข้อมูล
+function get_data($file) { return json_decode(file_get_contents($file), true); }
+function save_data($file, $data) { file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)); }
+
+// ระบบล็อกอิน
+$error = '';
+if (isset($_POST['login'])) {
+    $username = $_POST['username'];
+    $password = $_POST['password'];
+    
+    if ($username === 'Admin' && $password === '1234') {
+        $_SESSION['user'] = 'Admin';
+        $_SESSION['role'] = 'admin';
+        header('Location: index.php');
+        exit;
+    } elseif ($username === 'TIStock' && $password === '1234') {
+        $_SESSION['user'] = 'TIStock';
+        $_SESSION['role'] = 'user';
+        header('Location: index.php');
+        exit;
+    } else {
+        $error = 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง!';
+    }
+}
+
+// ล็อกเอาท์
+if (isset($_GET['action']) && $_GET['action'] == 'logout') {
+    session_destroy();
+    header('Location: index.php');
+    exit;
+}
+
+$is_logged_in = isset($_SESSION['user']);
+
+if ($is_logged_in) {
+    $products = get_data($product_file);
+    $history = get_data($history_file);
+    $role = $_SESSION['role'];
+    $current_user = $_SESSION['user'];
+
+    // Action: ยืมสินค้า
+    if (isset($_POST['action_borrow'])) {
+        $p_id = $_POST['p_id'];
+        $reason = $_POST['reason'];
+        foreach ($products as &$p) {
+            if ($p['id'] === $p_id && $p['qty'] > 0) {
+                $p['qty']--;
+                $history[] = [
+                    "date" => date('Y-m-d H:i:s'),
+                    "user" => $current_user,
+                    "action" => "ยืม",
+                    "id" => $p['id'],
+                    "name" => $p['name'],
+                    "reason" => $reason
+                ];
+                save_data($product_file, $products);
+                save_data($history_file, $history);
+                break;
+            }
+        }
+        header('Location: index.php');
+        exit;
+    }
+
+    // Action: คืนสินค้า
+    if (isset($_GET['action']) && $_GET['action'] == 'return' && isset($_GET['id'])) {
+        $p_id = $_GET['id'];
+        foreach ($products as &$p) {
+            if ($p['id'] === $p_id) {
+                $p['qty']++;
+                $history[] = [
+                    "date" => date('Y-m-d H:i:s'),
+                    "user" => $current_user,
+                    "action" => "คืน",
+                    "id" => $p['id'],
+                    "name" => $p['name'],
+                    "reason" => "-"
+                ];
+                save_data($product_file, $products);
+                save_data($history_file, $history);
+                break;
+            }
+        }
+        header('Location: index.php');
+        exit;
+    }
+
+    // Action Admin: เพิ่มสินค้า
+    if (isset($_POST['add_product']) && $role === 'admin') {
+        $products[] = [
+            "id" => $_POST['id'],
+            "name" => $_POST['name'],
+            "qty" => (int)$_POST['qty'],
+            "unit" => $_POST['unit'],
+            "img" => $_POST['img'] ?: 'https://images.unsplash.com/photo-1588508065123-287b28e013da?w=500'
+        ];
+        save_data($product_file, $products);
+        header('Location: index.php');
+        exit;
+    }
+
+    // Action Admin: ลบสินค้า
+    if (isset($_GET['action']) && $_GET['action'] == 'delete' && isset($_GET['id']) && $role === 'admin') {
+        $p_id = $_GET['id'];
+        $products = array_filter($products, function($p) use ($p_id) { return $p['id'] !== $p_id; });
+        save_data($product_file, array_values($products));
+        header('Location: index.php');
+        exit;
+    }
+
+    // Action Admin: แก้ไขสินค้า
+    if (isset($_POST['edit_product']) && $role === 'admin') {
+        $p_id = $_POST['old_id'];
+        foreach ($products as &$p) {
+            if ($p['id'] === $p_id) {
+                $p['id'] = $_POST['id'];
+                $p['name'] = $_POST['name'];
+                $p['qty'] = (int)$_POST['qty'];
+                $p['unit'] = $_POST['unit'];
+                if(!empty($_POST['img'])) $p['img'] = $_POST['img'];
+                break;
+            }
+        }
+        save_data($product_file, $products);
+        header('Location: index.php');
+        exit;
+    }
+
+    // คำนวณสถิติ
+    $stat_total_items = count($products);
+    $stat_user_borrows = 0;
+    $stat_admin_borrows = 0;
+    foreach ($history as $h) {
+        if ($h['action'] === 'ยืม') {
+            if ($h['user'] === 'TIStock') $stat_user_borrows++;
+            if ($h['user'] === 'Admin') $stat_admin_borrows++;
+        }
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="th" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TI Stock Management System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Chakra Petch', sans-serif; background-color: #0f172a; -webkit-tap-highlight-color: transparent; }
+        /* ซ่อน Scrollbar ของบอดี้โมดอลเพื่อความเนียนตาบนมือถือ */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col antialiased selection:bg-cyan-500 selection:text-slate-900">
+
+    <?php if (!$is_logged_in): ?>
+    <div class="flex-grow flex items-center justify-center p-4 sm:p-6">
+        <div class="bg-slate-800 border border-slate-700 p-6 sm:p-8 rounded-2xl shadow-2xl w-full max-w-md backdrop-blur-md bg-opacity-80">
+            <div class="text-center mb-6 sm:mb-8">
+                <div class="inline-flex p-3 bg-cyan-500 bg-opacity-10 rounded-full text-cyan-400 mb-2 border border-cyan-500 border-opacity-20">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
+                </div>
+                <h1 class="text-2xl font-bold tracking-wider text-cyan-400">IT STOCK LOGIN</h1>
+                <p class="text-slate-400 text-xs sm:text-sm mt-1">ระบบบริหารคลังอุปกรณ์ไอที</p>
+            </div>
+
+            <?php if($error): ?>
+                <div class="bg-red-500 bg-opacity-10 border border-red-500 border-opacity-20 text-red-400 p-3 rounded-xl text-xs sm:text-sm mb-4 text-center">
+                    <?php echo $error; ?>
+                </div>
+            <?php endif; ?>
+
+            <form action="" method="POST" class="space-y-4 sm:space-y-5">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Username</label>
+                    <input type="text" name="username" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500 transition" placeholder="ระบุชื่อผู้ใช้">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Password</label>
+                    <input type="password" name="password" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500 transition" placeholder="••••••••">
+                </div>
+                <button type="submit" name="login" class="w-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-semibold py-3.5 px-4 rounded-xl shadow-lg shadow-cyan-500/10 active:scale-[0.98] transition">
+                    เข้าสู่ระบบ
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <?php else: ?>
+    <header class="bg-slate-800/90 backdrop-blur-md border-b border-slate-700 sticky top-0 z-40 px-4 sm:px-6 lg:px-8">
+        <div class="max-w-7xl mx-auto h-16 flex items-center justify-between gap-2">
+            <div class="flex items-center space-x-2.5">
+                <span class="text-lg sm:text-xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent tracking-wider">TI STOCK</span>
+                <span class="px-2 py-0.5 text-[10px] sm:text-xs font-medium rounded-full <?php echo $role === 'admin' ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'; ?>">
+                    <?php echo strtoupper($role); ?>
+                </span>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button onclick="toggleModal('historyModal')" class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium flex items-center space-x-1">
+                    <span>📜 ประวัติ</span>
+                </button>
+                <a href="?action=logout" class="bg-red-500/10 border border-red-500/20 text-red-400 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium">ออกระบบ</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-grow w-full">
+        
+        <?php if ($role === 'admin'): ?>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+            <div class="bg-slate-800/60 border border-slate-700 p-4 rounded-xl flex items-center justify-between">
+                <div>
+                    <p class="text-[11px] text-slate-400 uppercase font-semibold">อุปกรณ์ทั้งหมด</p>
+                    <h4 class="text-xl font-bold text-cyan-400 mt-0.5"><?php echo $stat_total_items; ?> รายการ</h4>
+                </div>
+                <span class="text-xl">📦</span>
+            </div>
+            <div class="bg-slate-800/60 border border-slate-700 p-4 rounded-xl flex items-center justify-between border-l-4 border-l-amber-500">
+                <div>
+                    <p class="text-[11px] text-slate-400 uppercase font-semibold">ยอดรวบรวมยืมของ ยูสเซอร์</p>
+                    <h4 class="text-xl font-bold text-amber-400 mt-0.5"><?php echo $stat_user_borrows; ?> ครั้ง</h4>
+                </div>
+                <button onclick="openHistoryWithFilter('TIStock')" class="text-xs bg-amber-500/10 text-amber-400 px-2 py-1.5 rounded-lg border border-amber-500/20 active:bg-amber-500/20">เช็ค</button>
+            </div>
+            <div class="bg-slate-800/60 border border-slate-700 p-4 rounded-xl flex items-center justify-between border-l-4 border-l-purple-500">
+                <div>
+                    <p class="text-[11px] text-slate-400 uppercase font-semibold">ยอดรวบรวมยืมของ แอดมิน</p>
+                    <h4 class="text-xl font-bold text-purple-400 mt-0.5"><?php echo $stat_admin_borrows; ?> ครั้ง</h4>
+                </div>
+                <button onclick="openHistoryWithFilter('Admin')" class="text-xs bg-purple-500/10 text-purple-400 px-2 py-1.5 rounded-lg border border-purple-500/20 active:bg-purple-500/20">เช็ค</button>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <div class="flex items-center justify-between mb-6 gap-2">
+            <div>
+                <h2 class="text-xl sm:text-2xl font-bold text-slate-100">รายการอุปกรณ์คลัง</h2>
+                <p class="text-xs text-slate-400 hidden sm:block">ยืม-คืน ตรวจเช็คสต็อกได้แบบเรียลไทม์</p>
+            </div>
+            <?php if ($role === 'admin'): ?>
+                <button onclick="openAddModal()" class="bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-xs sm:text-sm font-medium px-4 py-2.5 rounded-xl shadow-lg transition active:scale-95 flex items-center space-x-1">
+                    <span>➕ เพิ่มใหม่</span>
+                </button>
+            <?php endif; ?>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+            <?php if(empty($products)): ?>
+                <div class="col-span-full text-center py-12 text-slate-500 bg-slate-800/50 rounded-2xl border border-dashed border-slate-700 text-sm">ไม่มีข้อมูลอุปกรณ์ในระบบ</div>
+            <?php else: ?>
+                <?php foreach ($products as $p): ?>
+                <div class="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden shadow-xl flex flex-col justify-between hover:border-slate-600 transition">
+                    <div class="relative h-44 sm:h-48 bg-slate-900 flex items-center justify-center overflow-hidden">
+                        <img src="<?php echo htmlspecialchars($p['img']); ?>" alt="" class="w-full h-full object-cover">
+                        <span class="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-md border border-slate-700 text-cyan-400 text-[10px] px-2 py-0.5 rounded font-mono">
+                            <?php echo htmlspecialchars($p['id']); ?>
+                        </span>
+                        <span class="absolute top-3 right-3 text-[10px] px-2 py-0.5 rounded font-medium <?php echo $p['qty'] > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'; ?>">
+                            <?php echo $p['qty'] > 0 ? 'พร้อมให้ยืม' : 'หมด'; ?>
+                        </span>
+                    </div>
+                    <div class="p-4 sm:p-5 flex-grow flex flex-col justify-between">
+                        <div>
+                            <h3 class="font-semibold text-base sm:text-lg text-slate-100 line-clamp-1"><?php echo htmlspecialchars($p['name']); ?></h3>
+                            <div class="flex items-baseline space-x-1.5 my-2">
+                                <span class="text-2xl font-bold text-slate-100"><?php echo $p['qty']; ?></span>
+                                <span class="text-xs text-slate-400"><?php echo htmlspecialchars($p['unit']); ?></span>
+                            </div>
+                        </div>
+                        
+                        <div class="space-y-2.5 mt-3">
+                            <div class="grid grid-cols-2 gap-2">
+                                <button onclick="borrowItem('<?php echo $p['id']; ?>', '<?php echo htmlspecialchars($p['name']); ?>', <?php echo $p['qty']; ?>)" class="w-full bg-cyan-600 text-white text-sm font-semibold py-2.5 rounded-xl transition active:scale-95 disabled:opacity-30" <?php echo $p['qty'] <= 0 ? 'disabled' : ''; ?>>
+                                    ⬇️ ยืม
+                                </button>
+                                <a href="?action=return&id=<?php echo $p['id']; ?>" class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm font-semibold py-2.5 rounded-xl text-center transition active:scale-95">
+                                    ⬆️ คืน
+                                </a>
+                            </div>
+
+                            <?php if ($role === 'admin'): ?>
+                                <div class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-700/60">
+                                    <button onclick='openEditModal(<?php echo json_encode($p, JSON_HEX_APOS | JSON_HEX_QUOT); ?>)' class="text-xs bg-purple-500/10 text-purple-400 border border-purple-500/20 py-2 rounded-lg text-center active:bg-purple-500/20">🔧 แก้ไข</button>
+                                    <button onclick="confirmDelete('<?php echo $p['id']; ?>')" class="text-xs bg-red-500/10 text-red-400 border border-red-500/20 py-2 rounded-lg text-center active:bg-red-500/20">🗑️ ลบ</button>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </main>
+
+    <div id="historyModal" class="fixed inset-0 z-50 hidden bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div class="bg-slate-800 border border-slate-700 w-full sm:max-w-4xl h-[85vh] sm:h-auto sm:max-h-[80vh] rounded-t-3xl sm:rounded-2xl flex flex-col shadow-2xl overflow-hidden">
+            <div class="p-4 sm:p-5 border-b border-slate-700 flex justify-between items-center bg-slate-800">
+                <h3 class="text-base sm:text-lg font-bold text-slate-100">📜 ตรวจสอบประวัติการ ยืม-คืน</h3>
+                <button onclick="toggleModal('historyModal')" class="text-slate-400 hover:text-slate-200 text-2xl px-2">&times;</button>
+            </div>
+            
+            <div class="p-4 bg-slate-900/60 border-b border-slate-700/50 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">🔍 ชื่อผู้ใช้งาน</label>
+                    <select id="filterUser" onchange="applyHistoryFilter()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-base sm:text-sm text-slate-200 focus:outline-none">
+                        <option value="">ทั้งหมด</option>
+                        <option value="TIStock">TIStock (User)</option>
+                        <option value="Admin">Admin (ผู้ดูแลระบบ)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">📝 ค้นหาคีย์เวิร์ด</label>
+                    <input type="text" id="searchHistory" onkeyup="applyHistoryFilter()" placeholder="รหัส / ชื่อของสินค้า / เหตุผล..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-base sm:text-sm text-slate-200 focus:outline-none">
+                </div>
+            </div>
+
+            <div class="p-4 sm:p-6 overflow-y-auto flex-grow no-scrollbar">
+                
+                <div class="hidden sm:block overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="text-xs uppercase bg-slate-900 text-slate-400 border-b border-slate-700">
+                            <tr>
+                                <th class="p-3">วัน-เวลา</th>
+                                <th class="p-3">ผู้ทำรายการ</th>
+                                <th class="p-3">ประเภท</th>
+                                <th class="p-3">รหัส / ชื่อสินค้า</th>
+                                <th class="p-3">เหตุผลการยืม</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pcTableBody" class="divide-y divide-slate-700/50">
+                            <?php foreach (array_reverse($history) as $h): ?>
+                            <tr class="history-item hover:bg-slate-700/30 font-row" data-user="<?php echo htmlspecialchars($h['user']); ?>" data-text="<?php echo htmlspecialchars($h['id'].' '.$h['name'].' '.$h['reason']); ?>">
+                                <td class="p-3 font-mono text-xs text-slate-400"><?php echo $h['date']; ?></td>
+                                <td class="p-3"><span class="px-2 py-0.5 rounded text-xs <?php echo $h['user'] === 'Admin' ? 'bg-purple-500/10 text-purple-400' : 'bg-amber-500/10 text-amber-400'; ?>"><?php echo htmlspecialchars($h['user']); ?></span></td>
+                                <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-bold <?php echo $h['action'] === 'ยืม' ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'; ?>"><?php echo $h['action']; ?></span></td>
+                                <td class="p-3">
+                                    <div class="text-xs text-cyan-400 font-mono"><?php echo htmlspecialchars($h['id']); ?></div>
+                                    <div class="text-slate-100 font-semibold"><?php echo htmlspecialchars($p_name = $h['name']); ?></div>
+                                </td>
+                                <td class="p-3 text-slate-400 max-w-xs truncate"><?php echo htmlspecialchars($h['reason']); ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="mobileCardList" class="block sm:hidden space-y-3">
+                    <?php if(empty($history)): ?>
+                        <p class="text-center text-slate-500 text-sm py-4">ไม่มีบันทึกประวัติ</p>
+                    <?php else: ?>
+                        <?php foreach (array_reverse($history) as $h): ?>
+                        <div class="history-item bg-slate-900/60 border border-slate-700/70 p-4 rounded-xl space-y-2.5 font-row" data-user="<?php echo htmlspecialchars($h['user']); ?>" data-text="<?php echo htmlspecialchars($h['id'].' '.$h['name'].' '.$h['reason']); ?>">
+                            <div class="flex justify-between items-center">
+                                <span class="font-mono text-[11px] text-slate-400"><?php echo $h['date']; ?></span>
+                                <span class="px-2 py-0.5 rounded text-xs font-bold <?php echo $h['action'] === 'ยืม' ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'; ?>"><?php echo $h['action']; ?></span>
+                            </div>
+                            <div class="border-t border-slate-800 my-1"></div>
+                            <div>
+                                <span class="text-[10px] text-cyan-400 font-mono block"><?php echo htmlspecialchars($h['id']); ?></span>
+                                <h5 class="text-slate-200 font-medium text-sm"><?php echo htmlspecialchars($h['name']); ?></h5>
+                            </div>
+                            <div class="flex items-center justify-between text-xs pt-1">
+                                <div class="text-slate-400">ผู้ทำรายการ: <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold <?php echo $h['user'] === 'Admin' ? 'bg-purple-500/10 text-purple-400' : 'bg-amber-500/10 text-amber-400'; ?>"><?php echo htmlspecialchars($h['user']); ?></span></div>
+                            </div>
+                            <div class="bg-slate-950/40 p-2 rounded-lg text-xs text-slate-400">
+                                <b class="text-slate-500 text-[11px]">เหตุผล:</b> <?php echo htmlspecialchars($h['reason']); ?>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div id="productModal" class="fixed inset-0 z-50 hidden bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div class="bg-slate-800 border border-slate-700 w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl shadow-2xl overflow-hidden">
+            <div class="p-4 border-b border-slate-700 flex justify-between items-center">
+                <h3 id="modalTitle" class="text-base font-bold text-slate-100">จัดการข้อมูลอุปกรณ์</h3>
+                <button onclick="toggleModal('productModal')" class="text-slate-400 hover:text-slate-200 text-2xl px-2">&times;</button>
+            </div>
+            <form id="productForm" method="POST" class="p-5 space-y-4 pb-8 sm:pb-5">
+                <input type="hidden" name="old_id" id="old_id">
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">รหัสสินค้า *</label>
+                    <input type="text" name="id" id="p_id" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">ชื่อสินค้า *</label>
+                    <input type="text" name="name" id="p_name" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">จำนวน *</label>
+                        <input type="number" name="qty" id="p_qty" min="0" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">หน่วยนับ *</label>
+                        <select name="unit" id="p_unit" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500">
+                            <option value="ชิ้น">ชิ้น</option>
+                            <option value="กล่อง">กล่อง</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">URL รูปภาพสินค้า</label>
+                    <input type="url" name="img" id="p_img" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-3 text-base text-slate-200 focus:outline-none focus:border-cyan-500" placeholder="https://...">
+                </div>
+                <div class="pt-3 flex justify-end space-x-2">
+                    <button type="button" onclick="toggleModal('productModal')" class="bg-slate-700 text-slate-300 px-4 py-2.5 rounded-xl text-sm active:scale-95">ยกเลิก</button>
+                    <button type="submit" id="submitBtn" class="bg-cyan-600 text-white px-5 py-2.5 rounded-xl text-sm font-medium active:scale-95"></button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <form id="hiddenBorrowForm" method="POST" class="hidden">
+        <input type="hidden" name="action_borrow" value="1">
+        <input type="hidden" name="p_id" id="borrow_pid">
+        <input type="hidden" name="reason" id="borrow_reason">
+    </form>
+
+    <script>
+        function toggleModal(id) {
+            document.getElementById(id).classList.toggle('hidden');
+        }
+
+        function openHistoryWithFilter(username) {
+            document.getElementById('filterUser').value = username;
+            applyHistoryFilter();
+            toggleModal('historyModal');
+        }
+
+        // ระบบกรองประวัติอัจฉริยะ (ดักจับทั้งแถวตาราง PC และ การ์ดจอของ Mobile พร้อมกัน)
+        function applyHistoryFilter() {
+            const userFilter = document.getElementById('filterUser').value.toLowerCase();
+            const searchFilter = document.getElementById('searchHistory').value.toLowerCase();
+            const items = document.querySelectorAll('.history-item');
+
+            items.forEach(item => {
+                const itemUser = item.getAttribute('data-user').toLowerCase();
+                const itemText = item.getAttribute('data-text').toLowerCase();
+
+                const matchesUser = userFilter === '' || itemUser === userFilter;
+                const matchesSearch = searchFilter === '' || itemText.includes(searchFilter);
+
+                if (matchesUser && matchesSearch) {
+                    item.classList.remove('hidden');
+                } else {
+                    item.classList.add('hidden');
+                }
+            });
+        }
+
+        function borrowItem(id, name, qty) {
+            if (qty <= 0) return;
+            Swal.fire({
+                title: 'ระบุเหตุผลการยืม',
+                text: `คุณกำลังจะยืม: ${name}`,
+                input: 'text',
+                inputPlaceholder: 'เหตุผลการเบิกไปใช้งาน...',
+                showCancelButton: true,
+                confirmButtonText: 'ยืนยัน',
+                cancelButtonText: 'ยกเลิก',
+                confirmButtonColor: '#0891b2',
+                background: '#1e293b',
+                color: '#f1f5f9',
+                inputValidator: (value) => {
+                    if (!value) return 'กรุณาระบุเหตุผลด้วยครับ!'
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    document.getElementById('borrow_pid').value = id;
+                    document.getElementById('borrow_reason').value = result.value;
+                    document.getElementById('hiddenBorrowForm').submit();
+                }
+            });
+        }
+
+        function openAddModal() {
+            document.getElementById('modalTitle').innerText = '➕ เพิ่มอุปกรณ์ IT ใหม่';
+            document.getElementById('productForm').action = '';
+            document.getElementById('old_id').value = '';
+            document.getElementById('p_id').value = '';
+            document.getElementById('p_id').disabled = false;
+            document.getElementById('p_name').value = '';
+            document.getElementById('p_qty').value = '0';
+            document.getElementById('p_unit').value = 'ชิ้น';
+            document.getElementById('p_img').value = '';
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.name = 'add_product';
+            submitBtn.innerText = 'เพิ่มสินค้า';
+            toggleModal('productModal');
+        }
+
+        function openEditModal(product) {
+            document.getElementById('modalTitle').innerText = '🔧 แก้ไขข้อมูลอุปกรณ์';
+            document.getElementById('old_id').value = product.id;
+            document.getElementById('p_id').value = product.id;
+            document.getElementById('p_name').value = product.name;
+            document.getElementById('p_qty').value = product.qty;
+            document.getElementById('p_unit').value = product.unit;
+            document.getElementById('p_img').value = product.img;
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.name = 'edit_product';
+            submitBtn.innerText = 'บันทึกแก้ไข';
+            toggleModal('productModal');
+        }
+
+        function confirmDelete(id) {
+            Swal.fire({
+                title: 'ยืนยันการลบ?',
+                text: "ข้อมูลชิ้นนี้จะหายไปจากคลังทันที!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#ef4444',
+                cancelButtonColor: '#64748b',
+                confirmButtonText: 'ลบเลย',
+                cancelButtonText: 'ยกเลิก',
+                background: '#1e293b',
+                color: '#f1f5f9',
+            }).then((result) => {
+                if (result.isConfirmed) window.location.href = `?action=delete&id=${id}`;
+            });
+        }
+    </script>
+    <?php endif; ?>
+
+    <footer class="bg-slate-950 text-center py-4 text-[11px] text-slate-500 border-t border-slate-800 mt-auto">
+        &copy; 2026 TI Stock Dashboard. All Rights Reserved. Designed for IT Team.
+    </footer>
+</body>
+</html>

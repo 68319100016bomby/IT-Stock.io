@@ -1,0 +1,16 @@
+[
+    {
+        "id": "IT-001",
+        "name": "Mouse Wireless Logitech",
+        "qty": 15,
+        "unit": "ชิ้น",
+        "img": "https:\/\/images.unsplash.com\/photo-1615663245857-ac93bb7c39e7?w=500"
+    },
+    {
+        "id": "IT-002",
+        "name": "สาย LAN Cat6 30M",
+        "qty": 5,
+        "unit": "กล่อง",
+        "img": "https:\/\/images.unsplash.com\/photo-1544244015-0df4b3ffc6b0?w=500"
+    }
+]
